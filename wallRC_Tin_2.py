@@ -162,7 +162,7 @@ def rc_model(t, Rex, C, Rin, T_star_simulated, T_wall_ext, T_wall_ini,wall):
         T_star_t = T_star_simulated[i-1]
         T_wall_t = T_wall_int_simulated[-1]
         if wall in ['TSI_S4', 'TSI_S6']:
-            T_wall_ext_t = T_star_t
+            T_wall_ext_t = T_wall_t
         dT_wall = dt / C * ((T_wall_ext_t - T_wall_t) / Rex - (T_wall_t - T_star_t) / Rin)
         T_wall_int_simulated.append(T_wall_t + dT_wall)
     return np.array(T_wall_int_simulated)
