@@ -8,12 +8,12 @@ file_path = 'RCB.csv'  # 请替换为实际文件路径
 data = pd.read_csv(file_path)
 
 # 提取墙壁温度列和室内外温度列
-wall_temp_columns = ['TSI_S4', 'TSI_S6',
-                     'TSI_S7', 'TSI_S8', 'TSI_S9', 'TSI_S10', 'TSI_S11', 'TSI_S12', 'TSI_S13', 'TSI_S14']#'TSI_S1', 'TSI_S2', 'TSI_S3',  'TSI_S5',# ext wall
-Rstar_list = 
+wall_temp_columns = ['TSI_S4', 'TSI_S6',#roof floor
+                     'TSI_S7', 'TSI_S8', 'TSI_S9', 'TSI_S10',#window 
+                     'TSI_S11', 'TSI_S12', 'TSI_S13', 'TSI_S14']#'wall
+
 file_path2 = 'RC.csv'
 
-def R_wall_choose:
 
 # 读取数据
 df2 = pd.read_csv(file_path2)
@@ -33,7 +33,7 @@ c_air = 1005  # 空气比热容 (J/kg·K)
 
 # 时间步长
 dt = 1800  # 0.5小时 -> 秒
-def star_model(t, Rstar, Rair, Cstar,T_air):
+def star_model(t, Rstar_win,Rstar_wall, Rair, Cstar,T_air):
     T_star_simulated = [T_air[0]]  # 初始化模拟温度
     for i in range(1, len(t)):
         T_air_t = T_air[i - 1]
@@ -43,7 +43,11 @@ def star_model(t, Rstar, Rair, Cstar,T_air):
         for wall in wall_temp_columns:
             T_wall_in = data[wall].values
             T_wall_t = T_wall_in[i-1]
-            Q_wall_star_temp = (T_wall_t - T_star_t) / Rstar
+            if wall in ['TSI_S7', 'TSI_S8', 'TSI_S9', 'TSI_S10']:
+                R_star = Rstar_win
+            else:
+                R_star = Rstar_wall
+            Q_wall_star_temp = (T_wall_t - T_star_t) / R_star
             Q_wall_star = Q_wall_star + Q_wall_star_temp
         dT_star = dt/Cstar * (Q_wall_star - (T_star_t - T_air_t) / Rair)
         T_star_simulated.append(T_star_t + dT_star)
@@ -55,16 +59,17 @@ T_star_measured = data['Tstar'].values
 T_wall_ext = data['Tout'].values
 t = np.arange(len(T_wall_ext))  # 时间步数
 # 初始参数猜测
-initial_guess = [0.001, 0.0001,1e8]
-bounds = ([0.0001,0.00005,10], [0.05, 10,1e11])  # 参数范围
+initial_guess = [0.001,0.001,0.001,1e8]
+bounds = ([0.0001,0.0001,0.0002,10], [0.005,1,1,1e11])  # 参数范围
 
 # 拟合曲线
-popt, _ = curve_fit(lambda t, Rstar, Rair, Cstar:
-                    star_model(t, Rstar, Rair, Cstar, T_air_measured),
+popt, _ = curve_fit(lambda t, Rstar_win, Rstar_wall, Rair, Cstar:
+                    star_model(t, Rstar_win, Rstar_wall, Rair, Cstar, T_air_measured),
                     t, T_star_measured , p0=initial_guess, bounds=bounds)
-Rstar_opt, Rair_opt, Cstar_opt = popt
-print(Rstar_opt, Rair_opt, Cstar_opt)
-T_star_simulated_cal = star_model(t,Rstar_opt, Rair_opt, Cstar_opt, T_air_measured)
+Rstar_opt_win, Rstar_opt_wall, Rair_opt, Cstar_opt = popt
+print(Rstar_opt_win, Rstar_opt_wall, Rair_opt, Cstar_opt)
+# Rstar_opt_win, Rstar_opt_wall, Rair_opt, Cstar_opt =[0.9999999816960106, 0.0009931446970638182, 0.000201136332950721, 16364861.351825876]
+T_star_simulated_cal = star_model(t,Rstar_opt_win, Rstar_opt_wall, Rair_opt, Cstar_opt, T_air_measured)
 
 # 绘制模拟与实际温度对比
 plt.figure(figsize=(8, 4))
@@ -98,7 +103,7 @@ plt.legend()
 plt.show()
 
 # 定义 RC 模型函数（用于 curve_fit）
-def rc_model(t, Rex, Rin, C, T_star_simulated, T_wall_ext, T_wall_ini,wall):
+def rc_model(t, Rex, C, Rin, T_star_simulated, T_wall_ext, T_wall_ini,wall):
     T_wall_int_simulated = [T_wall_ini]  # 初始化模拟温度
     for i in range(1, len(t)):
         T_wall_ext_t = T_wall_ext[i-1]
@@ -126,15 +131,20 @@ for wall in wall_temp_columns:
     t = np.arange(len(T_wall_ext))  # 时间步数
 
     # 初始参数猜测
-    initial_guess = [0.005, 0.005, 1000000]  # Rex, Rin, C
-    bounds = ([0.001, 0.001, 1000], [0.03, 0.03, 6000000])  # 参数范围
+    initial_guess = [0.0001, 1e11]  # Rex, Rin, C
+    bounds = ([0.0001, 1000], [1, 1e11])  # 参数范围
+    if wall in ['TSI_S7', 'TSI_S8', 'TSI_S9', 'TSI_S10']:
+        Rin = Rstar_opt_win
+    else:
+        Rin = Rstar_opt_wall
+
 
     # 拟合曲线
-    popt, _ = curve_fit(lambda t, Rex, Rin, C:
-                        rc_model(t, Rex, Rin, C, T_star_simulated_cal, T_wall_ext, T_wall_int_measured[0],wall),
+    popt, _ = curve_fit(lambda t, Rex, C:
+                        rc_model(t, Rex, C, Rin, T_star_simulated_cal, T_wall_ext, T_wall_int_measured[0],wall),
                         t, T_wall_int_measured, p0=initial_guess, bounds=bounds)
-    Rex_opt, Rin_opt, C_opt = popt
-    rc_params[wall] = (Rex_opt, Rin_opt, C_opt)
+    Rex_opt, C_opt = popt
+    rc_params[wall] = (Rex_opt, C_opt)
 
     # 计算每个时间步长的 Q_wall-zone (单位转换为 kJ/h)
     T_wall_int_simulated = rc_model(t, Rex_opt, Rin_opt, C_opt, T_star_simulated_cal, T_wall_ext, T_wall_int_measured[0],wall)
