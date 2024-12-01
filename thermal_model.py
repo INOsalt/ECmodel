@@ -14,6 +14,8 @@ class ThermalModel:
         self.gp_model = gp_model
         self.c_air = 1005  # 空气比热容 (J/kg·K)
         self.dt = None  # 时间步长将在后续设置
+        self.Rstar_win, self.Rstar_wall, self.Rair, self.Cstar, self.C_air = [0.0001, 0.001999, 0.00062838, 40723395.97479104, 200671880.13560498]
+        wall_RC_df = pd.read_csv('data.csv', index_col=0)
 
     def predict(self, Tamb_t, Tin_t, Qin_t, step_pre, vent_flow, Tsp_high=24,Tsp_low=21):
         """
