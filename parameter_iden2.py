@@ -71,7 +71,7 @@ def grey_box_model(params, time, external_temp, Q_heat, vent_temp, vent_flow):
     """
     R_ext_wall, R_zone_wall, C_wall, C_zone = params
     c_air = 1005  # 空气比热容 (J/kg·K)
-    dt = time[1] - time[0]  # 时间步长 (小时)
+    dt = (time[1] - time[0])*3600  # 时间步长 (s)
 
     # 初始化变量
     wall_temp = np.zeros(len(time))  # 墙体温度

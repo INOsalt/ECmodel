@@ -1,8 +1,4 @@
 import numpy as np
-import math
-from scipy.optimize import minimize
-from sklearn.gaussian_process import GaussianProcessRegressor
-from scipy.optimize import differential_evolution
 from sklearn.gaussian_process.kernels import RBF, ConstantKernel as C
 import matplotlib.pyplot as plt
 import joblib
@@ -11,147 +7,98 @@ from sklearn.metrics import mean_squared_error
 from standard_class import StandardizedGP
 from geneticalgorithm import geneticalgorithm as ga
 
+# 读取CSV文件
+file_path = 'RCB.csv'  # 请替换为实际文件路径
+data = pd.read_csv(file_path)
 
-def load_real_data(file_path):
-    """
-    从实际数据集加载数据并进行单位转换。
-
-    输入:
-    - file_path: 数据文件路径 (CSV)
-
-    输出:
-    - time: 时间序列 (小时)
-    - external_temp: 室外温度 (°C)
-    - Q_heat: 空间热负荷 (W)
-    - vent_temp: 通风供气温度 (°C)
-    - vent_flow: 通风质量流量 (kg/s)
-    - measured_temp: 实测室内温度 (°C)
-    """
-    # 读取数据
-    df = pd.read_csv(file_path)
-
-    # 确认时间间隔为 0.5 小时，生成时间序列 (小时)
-    time = df['TIME'].values * 0.5  # 原始数据以 0.5 为步长
-
-    # 室外温度 (°C)
-    external_temp = df['Tout'].values
-
-    # 墙温
-    wall_temp = df['Twall'].values
-
-    # 空间热负荷 (kJ/hr -> W)
-    # 注意: 1 kJ/hr = 0.2778 W
-    Q_heat = df['QHEAT_Zone1'].values * 0.2778
-    Q_cool = df['QCOOL_Zone1'].values * 0.2778
-    # Q_in = np.zeros(len(df['QHEAT_Zone1']))
-    Q_in = df['Qin_kJph'].values * 0.2778
-
-    # 通风供气温度 (°C)
-    vent_temp = df['TAIR_fresh'].values
-
-    # 通风流量 (kg/hr -> kg/s)
-    # 注意: 1 kg/hr = 1/3600 kg/s
-    vent_flow = df['Mrate_kgph'].values / 3600
-
-    # 实测室内温度 (°C)
-    measured_temp = df['TAIR_Zone1'].values
-
-    return time, external_temp,wall_temp, Q_heat,Q_cool, Q_in, vent_temp, vent_flow, measured_temp
+# 提取墙壁温度列和室内外温度列
+wall_temp_columns = ['TSI_S4', 'TSI_S6',
+                     'TSI_S7', 'TSI_S8', 'TSI_S9', 'TSI_S10', 'TSI_S11', 'TSI_S12', 'TSI_S13', 'TSI_S14']#'TSI_S1', 'TSI_S2', 'TSI_S3',  'TSI_S5',# ext wall
+file_path2 = 'RC.csv'
+# 读取数据
+df2 = pd.read_csv(file_path2)
+# 空间热负荷 (kJ/hr -> W)
+# 注意: 1 kJ/hr = 0.2778 W
+Q_heat = df2['QHEAT_Zone1'].values * 0.2778
+Q_cool = df2['QCOOL_Zone1'].values * 0.2778
+Q_space = Q_heat - Q_cool
+Q_in = df2['Qin_kJph'].values * 0.2778
+# 通风供气温度 (°C)
+vent_temp = df2['TAIR_fresh'].values
+# 通风流量 (kg/hr -> kg/s)
+# 注意: 1 kg/hr = 1/3600 kg/s
+vent_flow = 520 / 3600
+c_air = 1005  # 空气比热容 (J/kg·K)
 
 
+# 时间步长
+dt = 1800  # 0.5小时 -> 秒
+def star_model(t, Rstar, Rair, C_air, T_air_ini):
+    T_star_simulated = [T_air_ini]  # 初始化模拟温度
+    T_air_simulated = [T_air_ini]
+    for i in range(1, len(t)):
+        T_air_t = T_air_simulated[- 1]
+        T_star_t = T_star_simulated[-1]
+        dT_star = 0
 
-# 完整灰箱模型
-def grey_box_model(params, time, external_temp,wall_temp, Q_heat ,Q_cool, Q_in, vent_temp, vent_flow):
-    """
-    完整热平衡灰箱模型实现，直接使用散热器的空间热负荷 Q_heat。
+        for wall in wall_temp_columns:
+            T_wall_in = data[wall].values
+            T_wall_t = T_wall_in[-1]
+            dT_star_temp = dt/C * ((T_wall_t - T_star_t) / Rstar - (T_star_t - T_air_t) / Rair)
+            dT_star = dT_star + dT_star_temp
+        T_star_simulated.append(T_star_t + dT_star)
 
-    参数:
-    - params: 模型参数 [R_ext_wall, R_zone_wall, C_wall, C_zone]
-    - time: 时间序列 (小时)
-    - external_temp: 室外温度 (°C)
-    - Q_heat: 空间热负荷 (W)
-    - vent_temp: 通风供气温度 (°C)
-    - vent_flow: 通风质量流量 (kg/s)
-
-    返回:
-    - internal_temp: 室内空气温度的时间序列 (°C)
-    """
-    R_ext_wall, R_zone_wall, C_wall, C_zone = params
-    c_air = 1005  # 空气比热容 (J/kg·K)
-    dt = time[1] - time[0]  # 时间步长 (小时)
-
-    # 初始化变量
-    # wall_temp = np.zeros(len(time))  # 墙体温度
-    internal_temp = np.zeros(len(time))  # 室内空气温度
-    # wall_temp[0] = 20  # 初始墙体温度
-    internal_temp[0] = 20  # 初始室内空气温度
-
-    for t in range(1, len(time)):
-        # 1. 计算墙体与室外的热流 (Q_ext_wall)
-        Q_ext_wall = (1 / R_ext_wall) * (external_temp[t] - wall_temp[t - 1])
-
-        # 2. 计算墙体与室内的热流 (Q_zone_wall)
-        Q_zone_wall = (1 / R_zone_wall) * (wall_temp[t - 1] - internal_temp[t - 1])
-
-        # 3. 墙体温度动态更新
-        d_wall_temp = (Q_ext_wall - Q_zone_wall) / C_wall
-        wall_temp[t] = wall_temp[t - 1] + d_wall_temp * dt
-
-        # 4. 直接使用空间负荷
-        Q_zone_rad = Q_heat[t]  # 直接等于输入的 Q_heat
-        Q_space_cool = - Q_cool[t]
-
-        # 5. 内部热负荷 Q_in
-        Q_zone_in = Q_in[t]  # 直接等于输入的 Q_in
-
-        # 6.计算通风系统热流 (Q_vent)T 出口-入口
-        temp_diff = vent_temp[t] - internal_temp[t-1]
+        # 空间负荷
+        Q_space_t = Q_space[i]  # 直接等于输入的 Q_heat
+        # 通风系统热流 (Q_vent)
+        temp_diff = vent_temp[i] - T_air_simulated[- 1]
         # temp_diff = np.clip(temp_diff, -50, 50)  # 限制温差范围在 -50 到 50 之间
-        a = vent_temp[t]
-        b = internal_temp[t-1]
-        if vent_flow[t] > 0:  # 仅在通风质量流量为正时计算
-            Q_vent = vent_flow[t] * c_air * temp_diff
-        else:
-            Q_vent = 0  # 通风流量为负时，设置为 0
+        try:
+            Q_vent_t = vent_flow * c_air * temp_diff
+        except OverflowError:
+            print(f"Overflow encountered at t={i}, setting Q_vent to 0.")
+            Q_vent_t = 0
+        Q_in_t = Q_in[i]
+        Q_air = (T_star_t - T_air_t) / Rair + Q_space_t + Q_vent_t + Q_in_t
+        dT_air = dt / C_air * Q_air
+        T_air_simulated.append(T_air_t + dT_air)
 
-        # 7. 室内空气温度动态更新
-        d_internal_temp = (Q_zone_wall + Q_zone_rad + Q_vent + Q_zone_in + Q_space_cool) / C_zone  # 将所有热流项除以热容
-        # if math.isnan(d_internal_temp):
-        #     d_internal_temp = 0
-
-        internal_temp[t] = internal_temp[t - 1] + d_internal_temp * dt
-
-    return internal_temp
+    return np.array(T_air_simulated)
 
 
 
 # 参数辨识目标函数
-def objective_function(params, time, external_temp,wall_temp, Q_heat ,Q_cool, Q_in, vent_temp, vent_flow, measured_temp):
+def objective_function(params,t,measured_temp):
     """
     目标函数：最小化灰箱模型预测值与测量值之间的均方误差。
     """
     # 使用当前参数调用灰箱模型
-    predicted_temp = grey_box_model(params, time, external_temp,wall_temp, Q_heat ,Q_cool, Q_in, vent_temp, vent_flow)
+    Rstar, Rair, C_air = params
+    predicted_temp = star_model(t, Rstar, Rair, C_air, measured_temp[0])
+    #
+    # if np.any(np.isnan(predicted_temp)) or np.any(np.isnan(measured_temp)):
+    #     raise ValueError("Predicted or measured temperature contains NaN values.")
+    # if np.any(np.isinf(predicted_temp)) or np.any(np.isinf(measured_temp)):
+    #     raise ValueError("Predicted or measured temperature contains infinite values.")
 
     # 计算误差 (均方误差)
-    mse = mean_squared_error(predicted_temp, measured_temp)
+    mse = mean_squared_error(np.nan_to_num(predicted_temp), np.nan_to_num(measured_temp))
     return mse
 
 # 参数辨识方法
-def parameter_identification(time, external_temp,wall_temp, Q_heat ,Q_cool, Q_in, internal_temp, vent_temp, vent_flow):
+def parameter_identification(time, measured_temp):
     bounds = [
-        (0.1, 1e7),  # R_ext_wall
-        (0.1, 1e7),  # R_zone_wall
-        (10, 1e7),  # C_wall
-        (10, 1e7)  # C_zone
+        (0.0001, 50),  # R_ext_wall
+        (0.0001, 50),  # R_zone_wall
+        (10, 1e9),  # C_wall
     ]
 
     def ga_objective(params):
-        return objective_function(params, time, external_temp,wall_temp, Q_heat ,Q_cool, Q_in, vent_temp, vent_flow, internal_temp)
+        return objective_function(params,time,measured_temp)
 
     model = ga(
         function=ga_objective,
-        dimension=4,  # 参数维度
+        dimension=3,  # 参数维度
         variable_type='real',
         variable_boundaries=np.array(bounds),
         algorithm_parameters={
@@ -293,30 +240,27 @@ def visualize_and_save_results(time, measured_temp, predicted_temp, corrected_te
 # 主函数
 # 主函数
 def main():
-    # 数据准备
 
-    file_path = 'RC.csv'  # 替换为实际文件路径
-    time, external_temp, wall_temp, Q_heat ,Q_cool, Q_in, vent_temp, vent_flow, internal_temp = load_real_data(file_path)
-    #
     # # 参数辨识
-    # params = parameter_identification(time, external_temp,wall_temp, Q_heat ,Q_cool, Q_in, internal_temp, vent_temp, vent_flow)
-    # print("优化后的参数：", params)
+    T_air_measured = data['Tin'].values
+    time = np.arange(len(T_air_measured))  # 时间步数
+    params = parameter_identification(time, T_air_measured)
+    print("优化后的参数：", params)
 
-    # params = [100,99.99988063,10000,1000.00022737]
-    # params = [241.11551383,206.98652076,1000.,36.33634168]
-    # params = [ 227.97206597,  884.04197974, 9916.2309157,  9962.6445412 ]
-    params = [6176805.99725779, 9987082.48439311, 3452420.56892008, 1671112.44674421]
+    Rstar, Rair, C_air = params
+
     # 灰箱模型预测
-    predicted_temp = grey_box_model(params, time, external_temp,wall_temp, Q_heat ,Q_cool, Q_in, vent_temp, vent_flow)
+    T_air_predicted = star_model(time, Rstar, Rair, C_air, T_air_measured[0])
 
     # 可视化灰箱模型预测与实测值的对比（高斯校正之前）
-    visualize_before_correction(time, internal_temp, predicted_temp)
+    visualize_before_correction(time, T_air_measured, T_air_predicted)
     #
-    # 高斯过程校正
-    corrected_temp, gp_model = gaussian_process_correction(time,external_temp, internal_temp, predicted_temp)
-
-    # 可视化结果
-    visualize_and_save_results(time, internal_temp, predicted_temp, corrected_temp, gp_model, filename="gp_model.pkl")
+    #
+    # # 高斯过程校正
+    # corrected_temp, gp_model = gaussian_process_correction(time,external_temp, internal_temp, predicted_temp)
+    #
+    # # 可视化结果
+    # visualize_and_save_results(time, internal_temp, predicted_temp, corrected_temp, gp_model, filename="gp_model.pkl")
 
 
 if __name__ == "__main__":
