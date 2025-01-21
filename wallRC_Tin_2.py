@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 from scipy.optimize import curve_fit
 import matplotlib.pyplot as plt
+from scipy.optimize import differential_evolution
 
 # 读取CSV文件
 file_path = 'RCB.csv'  # 请替换为实际文件路径
@@ -109,11 +110,23 @@ T_air_measured = data['Tin'].values
 T_wall_ext = data['Tout'].values
 t = np.arange(len(T_wall_ext))  # 时间步数
 # 初始参数猜测
-initial_guess = [0.005,0.0012,0.0005,19059395,1e7]
-bounds = ([0.0001,0.0001,0.0002,10,10], [0.005,0.002,0.005,1e11,1e11])  # 参数范围
-# Rstar_opt_win, Rstar_opt_wall, Rair_opt, Cstar_opt =[0.004999999999999999, 0.001226805281748122, 0.00020000000000000004, 19059395.842857108]
-#0.00010000000000000002 0.0019999999999999996 0.0006283878191702747 40723395.97479104 200671880.13560498
+# initial_guess = [0.002,0.002,0.0005,2e7,1e7]
+# 使用遗传算法生成初始猜测值
+bounds = [(1e-4, 0.01), (1e-4, 0.02), (1e-4, 0.01), (10, 1e8), (10, 1e8)]
+result = differential_evolution(lambda params: np.sum((star_model(t, *params, T_air_measured[0]) - T_air_measured) ** 2),
+                                bounds)
+initial_guess = result.x
+print(initial_guess)
+bounds = ([0.0001,0.0001,0.00005,10,10], [0.01,0.02,0.01,1e11,1e8])  # 参数范围
+# 0.00010000000000000002 0.004999999999999999 0.0006548202133309478 39826128.28578544 49999999.99999999
 
+# [2.55377758e-03 1.00000000e-02 1.20809582e-04 2.38804814e+08
+#  1.84470288e+07]
+# 0.002567154680174365 0.009999999999999998 0.00011951184648766096 226229092.54520133 16113255.376616355
+
+# [2.55547194e-03 1.96642398e-02 9.35485710e-05 2.05934043e+08
+#  1.73165271e+07]
+# 0.002436990358271271 0.019999999999999997 0.00010728150932535978 218600129.0216549 16773920.364684984
 
 # 拟合曲线
 popt, _ = curve_fit(lambda t, Rstar_win,Rstar_wall, Rair, Cstar, C_air:
@@ -133,7 +146,7 @@ plt.legend()
 plt.show()
 
 T_star_measured = data['Tstar'].values
-q_wall_zone = (T_star_simulated_cal - T_air_measured) / Rair_opt * 3600/1000
+q_wall_zone = (T_star_simulated_cal - T_air_simulated_cal) / Rair_opt * 3600/1000
 q_wall_zone_measure = (T_star_measured - T_air_measured) / Rair_opt * 3600/1000
 # for wall in wall_temp_columns:
 #     T_wall_in = data[wall].values
@@ -146,7 +159,7 @@ q_surf = data['QSURF']
 # 绘制 Q_wall-zone 和 QSURF 比较图
 plt.figure(figsize=(12, 6))
 plt.plot(q_wall_zone, label='Q_wall-zone (Simulated)', linestyle='-', alpha=0.7)#, marker='o'
-# plt.plot(q_wall_zone_measure, label='Q_wall-zone (Measured)', linestyle='-', alpha=0.7)#, marker='s'
+plt.plot(q_wall_zone_measure, label='Q_wall-zone (Measured)', linestyle='-', alpha=0.7)#, marker='s'
 plt.plot(q_surf, label='Q_SURF (Measured)', linestyle='--', alpha=0.7)
 plt.xlabel('Time Steps (0.5h each)')
 plt.ylabel('Heat Flux (kJ/h)')

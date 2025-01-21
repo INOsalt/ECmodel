@@ -8,20 +8,149 @@ file_path = 'RCB.csv'  # 请替换为实际文件路径
 data = pd.read_csv(file_path)
 
 # 提取墙壁温度列和室内外温度列
-wall_temp_columns = ['TSI_S4', 'TSI_S6',
-                     'TSI_S7', 'TSI_S8', 'TSI_S9', 'TSI_S10', 'TSI_S11', 'TSI_S12', 'TSI_S13', 'TSI_S14']#'TSI_S1', 'TSI_S2', 'TSI_S3',  'TSI_S5',# ext wall
+wall_temp_columns = ['TSI_S4', 'TSI_S6',#roof
+                     'TSI_S7', 'TSI_S8', 'TSI_S9', 'TSI_S10',#window
+                     'TSI_S11', 'TSI_S12', 'TSI_S13', 'TSI_S14']#'TSI_S1', 'TSI_S2', 'TSI_S3',  'TSI_S5',# ext wall
+file_path2 = 'RC.csv'
+# 读取数据
+df2 = pd.read_csv(file_path2)
+# 空间热负荷 (kJ/hr -> W)
+# 注意: 1 kJ/hr = 0.2778 W
+Q_heat = df2['QHEAT_Zone1'].values * 0.2778
+Q_cool = df2['QCOOL_Zone1'].values * 0.2778
+Q_space = Q_heat - Q_cool
+Q_in = df2['Qin_kJph'].values * 0.2778
+# 通风供气温度 (°C)
+vent_temp = df2['TAIR_fresh'].values
+T_star = df2['Tstar'].values
+# 通风流量 (kg/hr -> kg/s)
+# 注意: 1 kg/hr = 1/3600 kg/s
+vent_flow = 520 / 3600
+c_air = 1005  # 空气比热容 (J/kg·K)
 
 
 # 时间步长
 dt = 1800  # 0.5小时 -> 秒
+def air_model(t, Rair, C_air, T_air_ini, T_star):
+    # T_star_simulated = [T_air_ini]  # 初始化模拟温度
+    T_air_simulated = [T_air_ini]
+    for i in range(1, len(t)):
+        T_air_t = T_air_simulated[- 1]
+        T_star_t = T_star[-1]
+
+        # 空间负荷
+        Q_space_t = Q_space[i - 1]
+        # 通风系统热流 (Q_vent)
+        temp_diff = vent_temp[i - 1] - T_air_t
+        Q_vent_t = vent_flow * c_air * temp_diff
+        Q_in_t = Q_in[i - 1]
+        Q_surf = (T_star_t - T_air_t) / Rair
+        Q_air = Q_surf + Q_space_t + Q_vent_t + Q_in_t
+        dT_air = dt / C_air * Q_air
+        T_air_simulated.append(T_air_t + dT_air)
+
+    return np.array(T_air_simulated)
+
+#Rair Cair
+T_air_measured = data['Tin'].values
+T_wall_ext = data['Tout'].values
+t = np.arange(len(T_wall_ext))  # 时间步数
+# 初始参数猜测
+initial_guess = [0.0005,1e8]
+bounds = ([0.0001,10], [0.005,1e9])  # 参数范围
+
+# 拟合曲线
+popt, _ = curve_fit(lambda t, Rair, C_air:
+                    air_model(t, Rair, C_air, T_air_measured[0], T_star),
+                    t, T_air_measured, p0=initial_guess, bounds=bounds)
+Rair_opt, C_air_opt = popt
+T_air_simulated_cal = air_model(t, Rair_opt, C_air_opt, T_air_measured[0], T_star)
+print(Rair_opt, C_air_opt)
+
+# 绘制模拟与实际温度对比
+plt.figure(figsize=(8, 4))
+plt.plot(T_air_measured, label='Measured', linestyle='--', alpha=0.7)
+plt.plot(T_air_simulated_cal, label='Simulated', linestyle='-', alpha=0.7)
+plt.xlabel('Time Steps (0.5h each)')
+plt.ylabel('Temperature (°C)')
+plt.legend()
+plt.show()
+
+def star_model(t, Rstar_win, Rstar_wall, Rair, Cstar, T_air):
+    T_star_simulated = [T_air[0]]  # 初始化模拟温度
+    for i in range(1, len(t)):
+        T_air_t = T_air[- 1]
+        T_star_t = T_star_simulated[-1]
+
+        Q_wall_star = 0
+        for wall in wall_temp_columns:
+            T_wall_in = data[wall].values
+            T_wall_t = T_wall_in[i-1]
+            if wall in ['TSI_S7', 'TSI_S8', 'TSI_S9', 'TSI_S10']:
+                R_star = Rstar_win
+            else:
+                R_star = Rstar_wall
+            Q_wall_star_temp = (T_wall_t - T_star_t) / R_star
+            Q_wall_star = Q_wall_star + Q_wall_star_temp
+        dT_star = dt/Cstar * (Q_wall_star - (T_star_t - T_air_t) / Rair)
+        T_star_simulated.append(T_star_t + dT_star)
+
+    return np.array(T_star_simulated)
+
+#Rair Cair
+T_star_measured = T_star
+T_wall_ext = data['Tout'].values
+t = np.arange(len(T_wall_ext))  # 时间步数
+# 初始参数猜测
+initial_guess = [0.001,0.0012,0.0005,2e7,1e7]
+bounds = ([0.0001,0.0001,0.0001,10,10], [0.005,0.005,0.005,1e11,5e7])  # 参数范围
+
+# 拟合曲线
+popt, _ = curve_fit(lambda t, Rstar_win,Rstar_wall, Cstar:
+                    star_model(t, Rstar_win, Rstar_wall, Rair_opt, Cstar, T_air_simulated_cal),
+                    t, T_star_measured, p0=initial_guess, bounds=bounds)
+Rstar_opt_win, Rstar_opt_wall, Cstar_opt = popt
+T_star_simulated_cal = star_model(t, Rstar_opt_win, Rstar_opt_wall, Rair_opt, Cstar_opt, T_air_simulated_cal)
+print(Rstar_opt_win, Rstar_opt_wall, Rair_opt, Cstar_opt, C_air_opt)#Rstar_opt_win, Rstar_opt_wall, Rair_opt, Cstar_opt, C_air_opt
+
+# 绘制模拟与实际温度对比
+plt.figure(figsize=(8, 4))
+plt.plot(T_star_measured, label='Measured', linestyle='--', alpha=0.7)
+plt.plot(T_star_simulated_cal, label='Simulated', linestyle='-', alpha=0.7)
+plt.xlabel('Time Steps (0.5h each)')
+plt.ylabel('Temperature (°C)')
+plt.legend()
+plt.show()
+
+T_star_measured = data['Tstar'].values
+q_wall_zone = (T_star_simulated_cal - T_air_simulated_cal) / Rair_opt * 3600/1000
+q_wall_zone_measure = (T_star_measured - T_air_measured) / Rair_opt * 3600/1000
+
+# 提取 CSV 文件中的 QSURF
+q_surf = data['QSURF']
+
+# 绘制 Q_wall-zone 和 QSURF 比较图
+plt.figure(figsize=(12, 6))
+plt.plot(q_wall_zone, label='Q_wall-zone (Simulated)', linestyle='-', alpha=0.7)#, marker='o'
+# plt.plot(q_wall_zone_measure, label='Q_wall-zone (Measured)', linestyle='-', alpha=0.7)#, marker='s'
+plt.plot(q_surf, label='Q_SURF (Measured)', linestyle='--', alpha=0.7)
+plt.xlabel('Time Steps (0.5h each)')
+plt.ylabel('Heat Flux (kJ/h)')
+plt.title('Comparison of Q_wall-zone and Q_SURF')
+plt.legend()
+plt.show()
 
 # 定义 RC 模型函数（用于 curve_fit）
-def rc_model(t, Rex, Rin, C, T_wall_ext, T_air, T_init):
-    T_wall_int_simulated = [T_init]  # 初始化模拟温度
+def rc_model(t, Rex, C, Rin, T_star_simulated, T_wall_ext, T_wall_ini,wall):
+    T_wall_int_simulated = [T_wall_ini]  # 初始化模拟温度
     for i in range(1, len(t)):
-        T_int_t = T_wall_int_simulated[-1]
-        dT = dt / C * ((T_wall_ext[i-1] - T_int_t) / Rex - (T_int_t - T_air[i-1]) / Rin)
-        T_wall_int_simulated.append(T_int_t + dT)
+        T_wall_ext_t = T_wall_ext[i-1]
+        T_star_t = T_star_simulated[i-1]
+        T_wall_t = T_wall_int_simulated[-1]
+        if wall in ['TSI_S4', 'TSI_S6']:
+            T_wall_ext_t = T_wall_t
+        dT_wall = dt / C * ((T_wall_ext_t - T_wall_t) / Rex - (T_wall_t - T_star_t) / Rin)
+        T_wall_int_simulated.append(T_wall_t + dT_wall)
     return np.array(T_wall_int_simulated)
 
 # 初始化结果存储
@@ -29,34 +158,32 @@ rc_params = {}
 q_wall_zone_all = pd.DataFrame(index=data.index)
 q_wall_zone_measure_all = pd.DataFrame(index=data.index)
 
-# 针对每面墙拟合 RC 参数
+t = np.arange(len(data['TIME'].values))  # 时间步数
+x_data = np.linspace(0, 4, 50)
+T_wall_ext = data['Tout'].values
+T_air = data['Tin'].values
+# 针对每面墙
 for wall in wall_temp_columns:
     T_wall_int_measured = data[wall].values
-    T_wall_ext = data['Tout'].values
-    T_air = data['Tin'].values
     t = np.arange(len(T_wall_ext))  # 时间步数
-    if wall in ['TSI_S4', 'TSI_S6',]:
-        T_wall_ext = data['Tout'].values
-
+    if wall in ['TSI_S7', 'TSI_S8', 'TSI_S9', 'TSI_S10']:
+        Rin = Rstar_opt_win
+    else:
+        Rin = Rstar_opt_wall
 
     # 初始参数猜测
-    initial_guess = [0.005, 0.005, 1000000]  # Rex, Rin, C
-    bounds = ([0.001, 0.001, 1000], [0.03, 0.03, 6000000])  # 参数范围
+    initial_guess = [0.001, 1e7]  # Rex, Rin, C
+    bounds = ([0.0001, 1000], [0.05, 1e11])  # 参数范围
 
     # 拟合曲线
-    popt, _ = curve_fit(
-        lambda t, Rex, Rin, C: rc_model(t, Rex, Rin, C, T_wall_ext, T_air, T_wall_int_measured[0]),
-        t, T_wall_int_measured, p0=initial_guess, bounds=bounds
-    )
-    Rex_opt, Rin_opt, C_opt = popt
-    rc_params[wall] = (Rex_opt, Rin_opt, C_opt)
+    popt, _ = curve_fit(lambda t, Rex, C:
+                        rc_model(t, Rex, C, Rin, T_star_simulated_cal, T_wall_ext, T_wall_int_measured[0],wall),
+                        t, T_wall_int_measured, p0=initial_guess, bounds=bounds)
+    Rex_opt, C_opt = popt
+    rc_params[wall] = (Rex_opt, Rin, C_opt)
 
     # 计算每个时间步长的 Q_wall-zone (单位转换为 kJ/h)
-    T_wall_int_simulated = rc_model(t, Rex_opt, Rin_opt, C_opt, T_wall_ext, T_air, T_wall_int_measured[0])
-    q_wall_zone = (T_wall_int_simulated - T_air) / Rin_opt * 3600/1000
-    q_wall_zone_all[wall] = q_wall_zone
-    q_wall_zone_measure = (T_wall_int_measured - T_air) / Rin_opt * 3600/1000
-    q_wall_zone_measure_all[wall] = q_wall_zone_measure
+    T_wall_int_simulated = rc_model(t, Rex_opt, C_opt, Rin, T_star_simulated_cal, T_wall_ext, T_wall_int_measured[0],wall)
 
     # 绘制模拟与实际温度对比
     plt.figure(figsize=(8, 4))
@@ -68,29 +195,13 @@ for wall in wall_temp_columns:
     plt.legend()
     plt.show()
 
-# 提取 CSV 文件中的 QSURF
-q_surf = data['QSURF']
 
-# 计算 Q_wall-zone 的总和
-q_wall_zone_sum = q_wall_zone_all.sum(axis=1)
-q_wall_zone_sum_measure = q_wall_zone_measure_all.sum(axis=1)
-
-# 绘制 Q_wall-zone 和 QSURF 比较图
-plt.figure(figsize=(12, 6))
-plt.plot(q_wall_zone_sum, label='Q_wall-zone (Simulated)', linestyle='-', alpha=0.7)#, marker='o'
-plt.plot(q_wall_zone_sum_measure, label='Q_wall-zone (Measured)', linestyle='-', alpha=0.7)#, marker='s'
-plt.plot(q_surf, label='Q_SURF (Measured)', linestyle='--', alpha=0.7)
-plt.xlabel('Time Steps (0.5h each)')
-plt.ylabel('Heat Flux (kJ/h)')
-plt.title('Comparison of Q_wall-zone and Q_SURF')
-plt.legend()
-plt.show()
 
 # 保存 RC 参数和比较结果
 rc_params_df = pd.DataFrame(rc_params, index=['Rex', 'Rin', 'C']).T
 rc_params_df.to_csv('rc_params_curvefit.csv', index=True)
-comparison_df = pd.DataFrame({'Q_wall-zone (kJ/h)': q_wall_zone_sum, 'Q_SURF (kJ/h)': q_surf})
-comparison_df.to_csv('comparison_curvefit.csv', index=False)
+# comparison_df = pd.DataFrame({'Q_wall-zone (kJ/h)': q_wall_zone_sum, 'Q_SURF (kJ/h)': q_surf})
+# comparison_df.to_csv('comparison_curvefit.csv', index=False)
 # 将 q_wall_zone_all 数据输出到 CSV 文件
 q_wall_zone_all.to_csv('q_wall_zone_all.csv', index=True, header=True)
 print("q_wall_zone_all 已保存到 q_wall_zone_all.csv")

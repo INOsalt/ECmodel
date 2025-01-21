@@ -64,7 +64,7 @@ def load_real_data(file_path):
 
 
 def gaussian_process_correction(time, external_temp, measured, predicted,
-                                initial_downsample_rate=1, max_retries=10):
+                                initial_downsample_rate=1, max_retries=50):
     """
     使用 StandardizedGP 类实现高斯过程回归校正灰箱模型的误差，并处理可能的收敛问题。
 
@@ -107,7 +107,7 @@ def gaussian_process_correction(time, external_temp, measured, predicted,
             corrected = predicted + correction
 
             # Save the trained Gaussian Process model
-            joblib.dump(gp_model, "gp_model.pkl")
+            gp_model.save("gp_model.pkl")
             print(f"Model saved to gp_model ")
             return corrected, gp_model
 
@@ -199,15 +199,18 @@ def train_gp_correction_for_Q(thermal_model, time_horizon, Tamb_t_list, Tin_t_li
     # 构建时间序列
     time_hour = np.arange(len(Qspace_list)) * step_pre / 3600
     line_len = min(len(time_hour), len(Q_space_measured), len(Qspace_list))
+    # print(len(Q_space_measured))
+    # print(len(Qspace_list))
 
     visualize_before_correction(time_hour[:line_len], Q_space_measured[:line_len], Qspace_list[:line_len])
+    visualize_before_correction(time_hour[:line_len], measured_temp[:line_len], Tin_list[:line_len])
 
     # 进行高斯过程校正
     corrected_Q, gp_model = gaussian_process_correction(
         time_hour,
-        Tamb_t_list[:len(Qspace_list)],  # 确保长度匹配
-        Q_space_measured[:len(Qspace_list)],  # 实测热负荷
-        np.array(Qspace_list),  # 预测热负荷
+        Tamb_t_list[:line_len],  # 确保长度匹配
+        Q_space_measured[:line_len],  # 实测热负荷
+        np.array(Qspace_list[:line_len]),  # 预测热负荷
         initial_downsample_rate=1,
         max_retries=10
     )
@@ -229,9 +232,10 @@ if __name__ == "__main__":
     params = [0.0028, 0.054, 190679918.65329826]
     # [0.002436990358271271, 0.019999999999999997, 0.00010728150932535978, 218600129.0216549, 16773920.364684984]#28432390.466448814
     wall_RC_params = pd.read_csv('rc_params_curvefit.csv', index_col=0)
-    
+
+    gp_model_name = "gp_model_final.pkl"
     # 初始化模型
-    thermal_model = ThermalModel(params, wall_RC_params, gp_model=None)
+    thermal_model = ThermalModel(params, wall_RC_params, gp_model_name)
 
     # 设置预测参数
     time_horizon = len(time)  # 预测时间长度
